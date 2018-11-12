@@ -1,0 +1,9 @@
+data/*
+dataset/*
+dataset2/*
+models/*
+nottouse/*
+PMout/*
+persondetectormodel/*
+X_CV.npy
+Y_CV.npy
