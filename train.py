@@ -11,7 +11,7 @@ import keras.layers as L
 from keras.optimizers import SGD, Adam
 from os.path import join
 from sklearn.preprocessing import LabelEncoder
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelBinarizer
 import matplotlib.pyplot as plt
 def pretrained_model():
     model = MobileNet(input_shape=(128, 128, 3), alpha=1.0, depth_multiplier=1, dropout=1e-3, include_top=False, weights='imagenet', input_tensor=None, pooling=None, classes=7)
@@ -21,7 +21,7 @@ def pretrained_model():
 
 def pretrained_small():
     model = MobileNet(input_shape=(128, 128, 3), alpha=1.0, depth_multiplier=1, dropout=1e-3, include_top=False, weights='imagenet', input_tensor=None, pooling=None, classes=7)
-    layer_name = 'conv_pw_3'
+    layer_name = 'conv_pw_2'
     intermodel = Model(inputs=model.input, outputs=model.get_layer(layer_name).output)
     return intermodel
 
@@ -214,10 +214,10 @@ def trainRealTransfer1_small():
     x = L.Dense(128, activation='elu')(x)
     x = L.Dropout(0.5)(x)
     x = L.Dense(8, activation='softmax')(x)
-    filepath='models/fullmodel_transfer_small1.h5'
+    filepath='models/fullmodel_transfer_small_pw2.h5'
     model = Model(inputs = intermodel.input, outputs = x)
     print(model.summary())
-    model.compile(optimizer=Adam(lr=0.00001, decay=0.000001), loss='categorical_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=Adam(lr=0.00001, decay=0.01), loss='categorical_crossentropy', metrics=['accuracy'])
     checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
     callback_list = [checkpoint]
     history=model.fit_generator(train_generator, steps_per_epoch=40, epochs=50, verbose=1, validation_data=test_generator, validation_steps=48, callbacks=callback_list)
@@ -228,7 +228,8 @@ def trainRealTransfer1_small():
     plt.ylabel('accuracy')
     plt.xlabel('epoch')
     plt.legend(['train', 'test'], loc='upper left')
-    plt.savefig('models/fullmodel_transfer_small1_history/accuracy.jpg')
+    plt.savefig('models/fullmodel_transfer_small_pw2_history/accuracy.jpg')
+    plt.gcf().clf()
     # summarize history for loss
     plt.plot(history.history['loss'])
     plt.plot(history.history['val_loss'])
@@ -236,7 +237,60 @@ def trainRealTransfer1_small():
     plt.ylabel('loss')
     plt.xlabel('epoch')
     plt.legend(['train', 'test'], loc='upper left')
-    plt.savefig('models/fullmodel_transfer_small1_history/loss.jpg')
+    plt.savefig('models/fullmodel_transfer_small_pw2_history/loss.jpg')
 
 
-trainRealTransfer1_small()
+def shuffle_in_unison_scary(X, Y):
+    rng_state = np.random.get_state()
+    np.random.shuffle(X)
+    np.random.set_state(rng_state)
+    np.random.shuffle(Y)
+    return X, Y
+
+
+def trainRealTransfer2_withoutgen():
+    batchsize = 64
+    X, Y= getdata()
+    X, Y= shuffle_in_unison_scary(X, Y)
+    print(Y)
+    intermodel = pretrained_model()
+    x = intermodel.output
+    x = L.Flatten()(x)
+    x = L.Dense(1000, activation='elu')(x)
+    x = L.Dropout(0.5)(x)
+    x = L.Dense(512, activation='elu')(x)
+    x = L.Dropout(0.5)(x)
+    x = L.Dense(128, activation='elu')(x)
+    x = L.Dropout(0.5)(x)
+    x = L.Dense(8, activation='softmax')(x)
+    model = Model(inputs = intermodel.input, outputs = x)
+    filepath="models/fullmodel_transfer2.h5"
+    model.compile(optimizer=Adam(lr=0.00005, decay=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
+    history = model.fit(x=X, y=Y, batch_size=64, epochs=60, verbose=1, validation_split=0.4)
+    
+def trainRealTransfer_small_KD():
+
+
+# custom dataset generation 
+def getdata():
+    mydir = 'data/extracted/'
+    X = np.zeros((2551, 128, 128, 3))
+    Y = np.zeros((2551,), dtype=int)
+    counter = 0
+    for direcs in os.listdir(mydir):
+        subpath = os.path.join(mydir, direcs)
+        print(direcs)
+        for imagename in os.listdir(subpath):
+            imagepath = os.path.join(subpath, imagename)
+            img = cv2.imread(imagepath)
+            img = cv2.resize(img, (128, 128))
+            X[counter, :, :, :] = img
+            Y[counter] = int(direcs)
+            counter+=1
+    print('done')
+    enc=LabelBinarizer()
+    Y=enc.fit_transform(Y.reshape(Y.shape[0], 1))
+    return X, Y
+
+
+trainRealTransfer2_withoutgen()()
