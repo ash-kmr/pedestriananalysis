@@ -4,7 +4,7 @@ import os
 import sys
 import keras
 from keras.applications.mobilenet import MobileNet
-from keras.models import Model, Sequential
+from keras.models import Model, Sequential, load_model
 from keras.preprocessing.image import ImageDataGenerator
 from keras.callbacks import ModelCheckpoint
 import keras.layers as L
@@ -21,7 +21,7 @@ def pretrained_model():
 
 def pretrained_small():
     model = MobileNet(input_shape=(128, 128, 3), alpha=1.0, depth_multiplier=1, dropout=1e-3, include_top=False, weights='imagenet', input_tensor=None, pooling=None, classes=7)
-    layer_name = 'conv_pw_2'
+    layer_name = 'conv_pw_3'
     intermodel = Model(inputs=model.input, outputs=model.get_layer(layer_name).output)
     return intermodel
 
@@ -170,6 +170,7 @@ def trainRealTransfer2():
     plt.xlabel('epoch')
     plt.legend(['train', 'test'], loc='upper left')
     plt.savefig('models/fullmodel_transfer2_history/accuracy.jpg')
+    plt.gcf().clf()
     # summarize history for loss
     plt.plot(history.history['loss'])
     plt.plot(history.history['val_loss'])
@@ -266,9 +267,115 @@ def trainRealTransfer2_withoutgen():
     model = Model(inputs = intermodel.input, outputs = x)
     filepath="models/fullmodel_transfer2.h5"
     model.compile(optimizer=Adam(lr=0.00005, decay=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
-    history = model.fit(x=X, y=Y, batch_size=64, epochs=60, verbose=1, validation_split=0.4)
+    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
+    callback_list = [checkpoint]
+    history = model.fit(x=X, y=Y, batch_size=64, epochs=40, verbose=1, validation_split=0.4, callbacks=callback_list)
+    print(model.evaluate(X, Y))
+    # summarize history for accuracy
+    plt.plot(history.history['acc'])
+    plt.plot(history.history['val_acc'])
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'test'], loc='upper left')
+    plt.savefig('models/fullmodel_transfer2_history/accuracy.jpg')
+    plt.gcf().clf()
+    # summarize history for loss
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'test'], loc='upper left')
+    plt.savefig('models/fullmodel_transfer2_history/loss.jpg')
+
+def create_KD_model():
+    intermodel = pretrained_small()
+    o1 = intermodel.output
+    x = L.Conv2D(256, kernel_size=(3, 3), strides=(2, 2), padding='same', activation='elu')(o1)
+    o2 = L.Conv2D(512, kernel_size=(3, 3), strides=(2, 2), padding='same', activation='elu', name='Y2')(x)
+    x = L.Flatten()(o2)
+    x = L.Dense(1000, activation='elu')(x)
+    x = L.Dropout(0.5)(x)
+    x = L.Dense(128, activation='elu')(x)
+    x = L.Dropout(0.5)(x)
+    x = L.Dense(8, activation='softmax', name='Y3')(x)
+    # model = Model(inputs = intermodel.input, outputs = [intermodel.get_layer('conv_pw_2').output, o2, x])
+    model = Model(inputs = intermodel.input, outputs=x)
+    # losses = {'conv_pw_2':'MSE', 'Y2':'MSE', 'Y3':'MSE'}
+    model.compile(optimizer=Adam(lr=0.0001, decay=0.01), loss='MSE', metrics=['accuracy'])
+    print(model.summary())
+    return model
     
+
+def getrandomsampleKD(X, Y, Y1, Y2, Y3):
+    rng_state = np.random.get_state()
+    np.random.shuffle(X)
+    np.random.set_state(rng_state)
+    np.random.shuffle(Y)
+    np.random.set_state(rng_state)
+    np.random.shuffle(Y1)
+    np.random.set_state(rng_state)
+    np.random.shuffle(Y2)
+    np.random.set_state(rng_state)
+    np.random.shuffle(Y3)
+    X_train = X[:int(0.6*2551), :, :, :]
+    Y_train = Y[:int(0.6*2551), :]
+    X_test = X[int(0.6*2551):, :, :, :]
+    Y_test = Y[int(0.6*2551):, :]
+    Y1_train = Y1[:int(0.6*2551), :, :, :]
+    Y2_train = Y2[:int(0.6*2551), :, :, :]
+    Y3_train = Y3[:int(0.6*2551), :]
+    Y1_test = Y1[int(0.6*2551):, :, :, :]
+    Y2_test = Y2[int(0.6*2551):, :, :, :]
+    Y3_test = Y3[int(0.6*2551):, :]
+    return X_train, Y_train, Y1_train, Y2_train, Y3_train, X_test, Y_test, Y1_test, Y2_test, Y3_test
+
+
 def trainRealTransfer_small_KD():
+    X, Y, Y1, Y2, Y3 = getsavedKDdata()
+    X_train, Y_train, Y1_train, Y2_train, Y3_train, X_test, Y_test, Y1_test, Y2_test, Y3_test = getrandomsampleKD(X, Y, Y1, Y2, Y3)
+    model = create_KD_model()
+    filepath = 'models/transfer_small_KD2.h5'
+    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
+    callback_list = [checkpoint]
+    # model.fit(x=X_train, y={'conv_pw_2':Y1_train, 'Y2':Y2_train, 'Y3':Y3_train}, batch_size=64, epochs=40, verbose=1, validation_data=(X_test, {'conv_pw_2':Y1_test, 'Y2':Y2_test, 'Y3':Y3_test}), callbacks=callback_list)
+    model.fit(x=X_train, y=Y3_train, batch_size=64, epochs=30, verbose=1, validation_data=(X_test, Y3_test), callbacks=callback_list)
+    output = model.predict(X_test)
+    predictions = output
+    predictions = np.array(predictions)
+    for i in range(predictions.shape[0]):
+        amax = predictions[i, :].argmax()
+        predictions[i, :] = 0
+        predictions[i, amax] = 1
+    total = predictions.shape[0]
+    correct=0
+    for i in range(total):
+        if np.array_equal(predictions[i, :].astype(int),Y_test[i, :]):
+            correct+=1
+
+    print(1.0*correct/total)
+# AMR2018190101542199343
+
+def checktest():
+    X, Y, Y1, Y2, Y3 = getsavedKDdata()
+    X_train, Y_train, Y1_train, Y2_train, Y3_train, X_test, Y_test, Y1_test, Y2_test, Y3_test = getrandomsampleKD(X, Y, Y1, Y2, Y3)
+    model = load_model('models/transfer_small_KD.h5')
+    output = model.predict(X_test)
+    predictions = output
+    predictions = np.array(predictions)
+    for i in range(predictions.shape[0]):
+        amax = predictions[i, :].argmax()
+        predictions[i, :] = 0
+        predictions[i, amax] = 1
+    total = predictions.shape[0]
+    correct=0
+    for i in range(total):
+        if np.array_equal(predictions[i, :].astype(int),Y_test[i, :]):
+            correct+=1
+
+    print(1.0*correct/total)
+
 
 
 # custom dataset generation 
@@ -290,7 +397,47 @@ def getdata():
     print('done')
     enc=LabelBinarizer()
     Y=enc.fit_transform(Y.reshape(Y.shape[0], 1))
+    np.save('KDdata/X.npy', X)
+    np.save('KDdata/Y.npy', Y)
     return X, Y
 
+def getsavedKDdata():
+    X = np.load('KDdata/X.npy')
+    Y = np.load('KDdata/Y.npy')
+    Y1 = np.load('KDdata/Y1.npy')
+    Y2 = np.load('KDdata/Y2.npy')
+    Y3 = np.load('KDdata/Y3.npy')
+    return X, Y, Y1, Y2, Y3
 
-trainRealTransfer2_withoutgen()()
+def gethighestaccuracymodeloutput():
+    model = load_model('models/fullmodel_transfer2.h5')
+    intermodel1 = Model(inputs=model.input, outputs=model.get_layer('conv_pw_2').output)
+    intermodel2 = Model(inputs=model.input, outputs=model.get_layer('conv_pw_6').output)
+    intermodel3 = Model(inputs=model.input, outputs=model.get_layer('dense_4').output)
+    print(model.summary())
+    X , Y = getdata()
+    # print(model.evaluate(X, Y))
+    # Ypred=model.predict(X)
+    # for i in range(Ypred.shape[0]):
+    #     amax = Ypred[i, :].argmax()
+    #     Ypred[i, :] = 0
+    #     Ypred[i, amax] = 1
+    # total = Ypred.shape[0]
+    # correct=0
+    # for i in range(total):
+    #     if np.array_equal(Ypred[i, :].astype(int),Y[i, :]):
+    #         correct+=1
+
+    # print(1.0*correct/total)
+    Y1 = intermodel1.predict(X)
+    Y2 = intermodel2.predict(X)
+    Y3 = intermodel3.predict(X)
+    np.save('KDdata/Y1.npy', Y1)
+    np.save('KDdata/Y2.npy', Y2)
+    np.save('KDdata/Y3.npy', Y3)
+
+# gethighestaccuracymodelo()utput()
+# trainRealTransfer2_withoutgen()
+# create_KD_model()
+# trainRealTransfer_small_KD()
+checktest()

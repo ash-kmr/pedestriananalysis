@@ -7,3 +7,4 @@ PMout/*
 persondetectormodel/*
 X_CV.npy
 Y_CV.npy
+KDdata/*
